@@ -1,0 +1,299 @@
+import random
+import numpy as np
+import matplotlib
+
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+
+CRITICAL_ERROR_THRESHOLD = 5
+MIN_EFFICIENCY = 70.0
+MAINTENANCE_HOURS = 500
+
+
+class Machine:
+    def __init__(self, machine_id, machine_type, hours_run, units_produced, units_rejected, error_count, seed):
+        self.__machine_id = machine_id
+        self.__machine_type = machine_type
+        self.__hours_run = float(hours_run)
+        self.__units_produced = int(units_produced)
+        self.__units_rejected = int(units_rejected)
+        self.__error_count = int(error_count)
+        self.__seed = int(seed)
+        self.__rng = random.Random(seed)
+
+    def get_machine_id(self):
+        return self.__machine_id
+
+    def get_machine_type(self):
+        return self.__machine_type
+
+    def get_rng(self):
+        return self.__rng
+
+    def get_units_produced(self):
+        return self.__units_produced
+
+    def get_units_rejected(self):
+        return self.__units_rejected
+
+    def get_hours_run(self):
+        return self.__hours_run
+
+    def get_error_count(self):
+        return self.__error_count
+
+    def reject_percent(self):
+        if self.__units_rejected == 0:
+            return 0.0
+        return self.__units_produced / self.__units_rejected
+
+    def identify_critic(self):
+        if self.__error_count >= CRITICAL_ERROR_THRESHOLD:
+            print(f"Warning: {self.__machine_id} has {self.__error_count} errors - CRITICAL STATUS")
+
+    def maintenance(self):
+        return self.__hours_run >= MAINTENANCE_HOURS
+
+
+class CuttingMachine(Machine):
+    def __init__(self, machine_id, machine_type, hours_run, units_produced, units_rejected, error_count, seed):
+        super().__init__(machine_id, machine_type, hours_run, units_produced, units_rejected, error_count, seed)
+        self.__speed_target = 60
+        self.__noise = self.get_rng().uniform(-2.0, 2.0)
+        self.__efficiency = (0.7 * self.quality() + 0.3 * self.speed()) * 100 + self.__noise
+
+    def get_efficiency(self):
+        return self.__efficiency
+
+    def quality(self):
+        if self.get_units_produced() == 0:
+            return 0.0
+        return (self.get_units_produced() - self.get_units_rejected()) / self.get_units_produced()
+
+    def speed(self):
+        if self.get_hours_run() == 0:
+            return 0.0
+        return min(self.get_units_produced() / (self.get_hours_run() * self.__speed_target), 1.0)
+
+
+class AssemblyMachine(Machine):
+    def __init__(self, machine_id, machine_type, hours_run, units_produced, units_rejected, error_count, seed):
+        super().__init__(machine_id, machine_type, hours_run, units_produced, units_rejected, error_count, seed)
+        self.__noise = self.get_rng().uniform(-1.5, 1.5)
+        self.__error_penalty = 3
+        self.__efficiency = self.quality() * 100 - self.get_error_count() * self.__error_penalty + self.__noise
+
+    def get_efficiency(self):
+        return self.__efficiency
+
+    def quality(self):
+        if self.get_units_produced() == 0:
+            return 0.0
+        return (self.get_units_produced() - self.get_units_rejected()) / self.get_units_produced()
+
+
+class QualityChecker(Machine):
+    def __init__(self, machine_id, machine_type, hours_run, units_produced, units_rejected, error_count, seed):
+        super().__init__(machine_id, machine_type, hours_run, units_produced, units_rejected, error_count, seed)
+        self.__noise = self.get_rng().uniform(-1.0, 1.0)
+        self.__error_penalty = 2
+        self.__scan_target = 80
+        self.__efficiency = self.throughput() * 100 - self.get_error_count() * self.__error_penalty + self.__noise
+
+    def get_efficiency(self):
+        return self.__efficiency
+
+    def throughput(self):
+        if self.get_hours_run() == 0:
+            return 0.0
+        return min(self.get_units_produced() / (self.get_hours_run() * self.__scan_target), 1.0)
+
+
+class Factory:
+    def __init__(self, factory_name, log_file):
+        self.__factory_name = factory_name
+        self.__log_file = log_file
+        self.list_machines()
+        self.__all_machines = self.get_cutting_list() + self.get_assembly_list() + self.get_quality_list()
+
+    def list_machines(self):
+        self.__cutting_list = []
+        self.__assembly_list = []
+        self.__quality_list = []
+        with open(self.__log_file) as f:
+            lines = f.readlines()
+            for line in lines:
+                machine_parameters = line.strip().split(',')
+
+                m_type = machine_parameters[1]
+                if m_type == 'cutting':
+                    cm = CuttingMachine(*machine_parameters)
+                    self.__cutting_list.append(cm)
+                elif m_type == 'assembly':
+                    am = AssemblyMachine(*machine_parameters)
+                    self.__assembly_list.append(am)
+                elif m_type == 'quality':
+                    qm = QualityChecker(*machine_parameters)
+                    self.__quality_list.append(qm)
+
+    def get_cutting_list(self):
+        return self.__cutting_list
+
+    def get_assembly_list(self):
+        return self.__assembly_list
+
+    def get_quality_list(self):
+        return self.__quality_list
+
+    def print_errors(self):
+        for machine in self.__all_machines:
+            machine.identify_critic()
+
+    def efficiancy_graph(self):
+        machine_ids = []
+        efficiencies = []
+        for machine in self.__all_machines:
+            machine_ids.append(machine.get_machine_id())
+            efficiencies.append(machine.get_efficiency())
+
+        colors = []
+        for eff in efficiencies:
+            if eff >= MIN_EFFICIENCY:
+                colors.append('green')
+            else:
+                colors.append('red')
+
+        plt.figure(figsize=(10, 6))
+        plt.bar(machine_ids, efficiencies, color=colors, edgecolor='black', zorder=2)
+        plt.axhline(y=MIN_EFFICIENCY, color='red', linestyle='--', linewidth=2,
+                    label=f'Min Threshold ({MIN_EFFICIENCY}%)', zorder=3)
+        plt.legend(handles=handles, loc='upper left', frameon=True, shadow=True)
+
+        plt.xlabel('Machine ID', fontsize=12)
+        plt.ylabel('Efficiency Score(%)', fontsize=12)
+        plt.title(f'Performance Analysis - {self.__factory_name} Factory', fontsize=14, pad=15)
+
+        plt.ylim(0, 100)
+        plt.grid(axis='y', linestyle=':', alpha=0.6, zorder=1)
+
+        handles, labels = plt.gca().get_legend_handles_labels()
+        file_name = "efficiency_chart.png"
+        plt.tight_layout()
+        plt.savefig(file_name, dpi=300)
+        plt.close()
+
+    def generate_report(self):
+        with open("factory_report.txt", "w", encoding="utf-8") as file:
+            file.write(f"FACTORY REPORT {self.__factory_name}\n")
+            file.write("=" * 60 + "\n")
+
+            categories = [
+                ("Cutting Machines", self.get_cutting_list()),
+                ("Assembly Machines", self.get_assembly_list()),
+                ("Quality Checkers", self.get_quality_list())]
+
+            for title, machine_list in categories:
+                file.write(f"{title}\n")
+                for m in machine_list:
+                    if m.get_error_count() >= CRITICAL_ERROR_THRESHOLD:
+                        crit_status = " !! CRITICAL"
+                    else:
+                        crit_status = ""
+                    file.write(f"{m.get_machine_id()}\n")
+                    file.write(
+                        f"| Hours: {m.get_hours_run():<8} | Produced: {m.get_units_produced():<8} | Rejected: {m.get_units_rejected():<8} | Errors: {m.get_error_count():<8} | Eff: {m.get_efficiency():.2f}%{crit_status}\n")
+
+            file.write("=" * 60 + "\n")
+            file.write("SUMMARY STATISTICS (numpy)\n")
+
+            eff_list = []
+            for m in self.__all_machines:
+                eff_list.append(m.get_efficiency())
+            efficiencies = np.array(eff_list)
+
+            prod_list = []
+            for m in self.__all_machines:
+                prod_list.append(m.get_units_produced())
+            produced_arr = np.array(prod_list)
+
+            rej_list = []
+            for m in self.__all_machines:
+                rej_list.append(m.get_units_rejected())
+            rejected_arr = np.array(rej_list)
+
+            avg_eff = np.mean(efficiencies)
+            best_idx = np.argmax(efficiencies)
+            worst_idx = np.argmin(efficiencies)
+            total_produced = np.sum(produced_arr)
+            total_rejected = np.sum(rejected_arr)
+
+            if total_produced > 0:
+                overall_rej_percent = (total_rejected / total_produced) * 100
+            else:
+                overall_rej_percent = 0.0
+
+            critical_machines = []
+            for m in self.__all_machines:
+                if m.get_error_count() >= CRITICAL_ERROR_THRESHOLD:
+                    critical_machines.append(m.get_machine_id())
+
+            maintenance_count = 0
+            for m in self.__all_machines:
+                if m.maintenance():
+                    maintenance_count += 1
+
+            file.write(f"Average efficiency      : {avg_eff:.2f}%\n")
+            file.write(
+                f"Highest efficiency      : {self.__all_machines[best_idx].get_machine_id()} ({efficiencies[best_idx]:.2f}%)\n")
+            file.write(
+                f"Lowest efficiency       : {self.__all_machines[worst_idx].get_machine_id()} ({efficiencies[worst_idx]:.2f}%)\n")
+            file.write(f"Total units produced    : {total_produced}\n")
+            file.write(f"Total units rejected    : {total_rejected}\n")
+            file.write(f"Overall rejection %     : {overall_rej_percent:.2f}%\n")
+
+            if critical_machines:
+                crit_names = ", ".join(critical_machines)
+            else:
+                crit_names = "None"
+
+            file.write(f"Critical machines       : {len(critical_machines)} ({crit_names})\n")
+            file.write(f"Maintenance due         : {maintenance_count} machines\n")
+
+            file.write("=" * 60 + "\n")
+
+            file.write("RANKING best to worst efficiency\n")
+            sorted_machines = sorted(self.__all_machines, key=lambda x: x.get_efficiency(), reverse=True)
+
+            for index, m in enumerate(sorted_machines, start=1):
+                if m.get_error_count() >= CRITICAL_ERROR_THRESHOLD:
+                    crit_status = " !! CRITICAL"
+                else:
+                    crit_status = ""
+                file.write(
+                    f"{index}. {m.get_machine_id()} [{m.get_machine_type()}] {m.get_efficiency():.2f}%{crit_status}\n")
+
+        print("Report saved to: factory_report.txt")
+
+
+def main():
+    factory_name = input('Enter factory name: ').strip()
+    found_log = False
+    while not found_log:
+        log_file = input('Enter log file name (e.g., factory_log.txt): ').strip()
+        try:
+            f = Factory(factory_name, log_file)
+            found_log = True
+        except FileNotFoundError:
+            print(f"Error: Cannot find '{log_file}'. Please check the spelling and try again.")
+
+    print(f'\n{factory_name} loaded successfully.')
+    total_machines = len(f.get_cutting_list()) + len(f.get_assembly_list()) + len(f.get_quality_list())
+    print(
+        f"Machines loaded: {total_machines} ({len(f.get_cutting_list())} cutting, {len(f.get_assembly_list())} assembly, {len(f.get_quality_list())} quality)")
+    f.print_errors()
+    f.efficiancy_graph()
+    f.generate_report()
+
+
+main()
