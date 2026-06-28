@@ -1,0 +1,402 @@
+import random
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+
+CRITICAL_ERROR_THRESHOLD = 5
+MIN_EFFICIENCY = 70.0
+MAINTENANCE_HOURS = 500
+
+
+# מחלקת מכונה, אב לכלל המחלקות,
+class Machine:
+    def __init__(self, machine_id, machine_type, hours_run, units_produced, units_rejected, error_count, seed):
+        self.__machine_id = machine_id
+        self.__machine_type = machine_type
+        self.__hours_run = float(hours_run)
+        self.__units_produced = int(units_produced)
+        self.__units_rejected = int(units_rejected)
+        self.__error_count = int(error_count)
+        self.__seed = int(seed) #  משתנה הנקלט מהמשתמש שבעזרתו מגרילים מספר רנדומלי rng המשמש לחישובים כמו יעילות
+        self.__rng = random.Random(self.__seed)
+    # getters שמטרתם לקבל פרמטרים פרטיים מחוץ למחלקה
+    def get_machine_id(self):
+        return self.__machine_id
+
+    def get_machine_type(self):
+        return self.__machine_type
+
+    def get_rng(self):
+        return self.__rng
+
+    def get_units_produced(self):
+        return self.__units_produced
+
+    def get_units_rejected(self):
+        return self.__units_rejected
+
+    def get_hours_run(self):
+        return self.__hours_run
+
+    def get_error_count(self):
+        return self.__error_count
+
+    def reject_percent(self):
+        if self.__units_rejected == 0:
+            return 0.0
+        return self.__units_rejected / self.__units_produced
+
+    def identify_critic(self):
+        if self.__error_count >= CRITICAL_ERROR_THRESHOLD:
+            print(f"Warning: {self.__machine_id} has {self.__error_count} errors - CRITICAL STATUS")
+
+    def maintenance(self):
+        return self.__hours_run >= MAINTENANCE_HOURS
+
+
+class CuttingMachine(Machine):
+    def __init__(self, machine_id, machine_type, hours_run, units_produced, units_rejected, error_count, seed):
+        super().__init__(machine_id, machine_type, hours_run, units_produced, units_rejected, error_count, seed)
+        self.__speed_target = 60
+        self.__noise = self.get_rng().uniform(-2.0, 2.0)
+        # מחושב באתחול כי ביקשו מאיתנו שיקרא בדיוק פעם אחת
+        self.__efficiency = (0.7 * self.quality() + 0.3 * self.speed()) * 100 + self.__noise
+        if self.get_units_produced() == 0:
+            self.__efficiency = 0.0
+        if self.__efficiency < 0:
+            self.__efficiency = 0.0
+
+    def get_efficiency(self):
+        return self.__efficiency
+
+    def quality(self):
+        if self.get_units_produced() == 0:
+            return 0.0
+        return (self.get_units_produced() - self.get_units_rejected()) / self.get_units_produced()
+
+    def speed(self):
+        if self.get_hours_run() == 0:
+            return 0.0
+        return min(self.get_units_produced() / (self.get_hours_run() * self.__speed_target), 1.0)
+
+
+class AssemblyMachine(Machine):
+    def __init__(self, machine_id, machine_type, hours_run, units_produced, units_rejected, error_count, seed):
+        super().__init__(machine_id, machine_type, hours_run, units_produced, units_rejected, error_count, seed)
+        self.__noise = self.get_rng().uniform(-1.5, 1.5)
+        self.__error_penalty = 3
+        # מחושב באתחול כי ביקשו מאיתנו שיקרא בדיוק פעם אחת
+        self.__efficiency = self.quality() * 100 - self.get_error_count() * self.__error_penalty + self.__noise
+        if self.get_units_produced() == 0:
+            self.__efficiency = 0.0
+        if self.__efficiency < 0:
+            self.__efficiency = 0.0
+
+    def get_efficiency(self):
+        return self.__efficiency
+
+    def quality(self):
+        if self.get_units_produced() == 0:
+            return 0.0
+        return (self.get_units_produced() - self.get_units_rejected()) / self.get_units_produced()
+
+
+class QualityChecker(Machine):
+    def __init__(self, machine_id, machine_type, hours_run, units_produced, units_rejected, error_count, seed):
+        super().__init__(machine_id, machine_type, hours_run, units_produced, units_rejected, error_count, seed)
+        self.__noise = self.get_rng().uniform(-1.0, 1.0)
+        self.__error_penalty = 2
+        self.__scan_target = 80
+        # מחושב באתחול כי ביקשו מאיתנו שיקרא בדיוק פעם אחת
+        self.__efficiency = self.throughput() * 100 - self.get_error_count() * self.__error_penalty + self.__noise
+        if self.get_units_produced() == 0:
+            self.__efficiency = 0.0
+        if self.__efficiency < 0:
+            self.__efficiency = 0.0
+
+    def get_efficiency(self):
+        return self.__efficiency
+
+    def throughput(self):
+        if self.get_hours_run() == 0:
+            return 0.0
+        return min(self.get_units_produced() / (self.get_hours_run() * self.__scan_target), 1.0)
+
+
+class Factory:
+    def __init__(self, factory_name, log_file):
+        self.__factory_name = factory_name
+        self.__log_file = log_file
+        self.list_machines() # פעולה המאתחלת את כל הרשימות המתקבלות מקובץ הטקסט ואת רשימת המכונות שיצרו שגיאה
+
+    def list_machines(self):
+        self.__cutting_list = []
+        self.__assembly_list = []
+        self.__quality_list = []
+        self.__all_machines = []
+        self.skiped_list = [] # רשימת השורות בהם הייתה שגיאה - מכיל את מספר השורה וסוג השגיאה
+        with open(self.__log_file, encoding='utf-8') as f:
+            lines = f.readlines()
+            for i in range(0, len(lines)):
+                machine_parameters = lines[i].strip().split(',')
+                valid_input = True
+                
+                if len(machine_parameters) != 7:
+                    valid_input = False
+                    self.skiped_list.append([i + 1, 'fields']) # מוסיף שגיאה שנובעת מאי התאמה בכמות השורות (לא 7)
+                    continue
+
+                try: 
+                    m_type = machine_parameters[1].strip().lower()
+
+                    if m_type not in ['cutting', 'assembly', 'quality']:
+                        self.skiped_list.append([i + 1, 'type', machine_parameters[1]]) # מוסיף שגיאה שנובעת מסוג השונה מהידועים
+                        continue
+
+                    hours = float(machine_parameters[2])
+                    produced = int(machine_parameters[3])
+                    rejected = int(machine_parameters[4])
+                    errors = int(machine_parameters[5])
+
+                    if hours == 0:
+                        self.skiped_list.append([i + 1, 'zero_hours']) #מוסף שגיאה המצביעה על חלוקה ב-0 
+                        valid_input = False
+                    elif hours < 0 or produced < 0 or rejected < 0 or errors < 0:
+                        self.skiped_list.append([i + 1, 'negative'])# מוסיף שגיאה על ערכים שלא יכולים להיות שליליים
+                        valid_input = False
+                    elif rejected > produced:
+                        self.skiped_list.append([i + 1, 'exceeded']) # מוסיף שגיאה שמצביעה על כך שהיחידות שנדחו גדולות מאילו שקיימות
+                        valid_input = False
+                    elif valid_input == True: # רק במידה ולא קפצה שגיאה אחרת עד כה בודק אם קיים איבר ריק כפרמטק
+                        for p in machine_parameters:
+                            if p == '':
+                                valid_input = False
+                                self.skiped_list.append([i + 1, 'invalid']) #מוסיף שגיאה על ערך לא תקין
+                                break
+                    # במידה ולא קפצה שגיאה ניצור אובייקט מהסוג שקיבלנו בשורה ונוסיף אותו לרשימות הרלוונטיות
+                    if m_type == 'cutting' and valid_input == True: 
+                        cm = CuttingMachine(machine_parameters[0], m_type, machine_parameters[2],
+                                            machine_parameters[3], machine_parameters[4], machine_parameters[5],
+                                            machine_parameters[6])
+                        self.__cutting_list.append(cm)
+                        self.__all_machines.append(cm)
+                    elif m_type == 'assembly' and valid_input == True:
+                        am = AssemblyMachine(machine_parameters[0], m_type, machine_parameters[2],
+                                            machine_parameters[3], machine_parameters[4], machine_parameters[5],
+                                            machine_parameters[6])
+                        self.__assembly_list.append(am)
+                        self.__all_machines.append(am)
+                    elif m_type == 'quality' and valid_input == True:
+                        qm = QualityChecker(machine_parameters[0], m_type, machine_parameters[2],
+                                            machine_parameters[3], machine_parameters[4], machine_parameters[5],
+                                            machine_parameters[6])
+                        self.__quality_list.append(qm)
+                        self.__all_machines.append(qm)
+
+                except ValueError: 
+                    self.skiped_list.append([i + 1, 'invalid']) # במידה ואחד הפרמטרים אינו מהטיפוס הנכון נוספת שגיאת - ערך לא תקין
+
+    def get_cutting_list(self):
+        return self.__cutting_list
+
+    def get_assembly_list(self):
+        return self.__assembly_list
+
+    def get_quality_list(self):
+        return self.__quality_list
+
+    def print_errors(self):
+        for machine in self.__all_machines:
+            machine.identify_critic()
+
+    def efficiancy_graph(self):
+        machine_ids = [] # רשימת תועדות זהות של כל המכונות
+        efficiencies = [] # רשימת יעילויות של כל המכונות 
+        for machine in self.__all_machines:
+            machine_ids.append(machine.get_machine_id())
+            efficiencies.append(machine.get_efficiency())
+
+        colors = []
+        for eff in efficiencies:
+            if eff >= MIN_EFFICIENCY:
+                colors.append('green')
+            else:
+                colors.append('red')
+
+        plt.figure(figsize=(10, 6))
+        plt.bar(machine_ids, efficiencies, color=colors, edgecolor='black', zorder=2)
+        plt.axhline(y=MIN_EFFICIENCY, color='red', linestyle='--', linewidth=2,
+                    label=f'Min threshold ({MIN_EFFICIENCY}%)', zorder=3)
+        plt.legend(loc='upper left', frameon=True, shadow=True)
+
+        plt.xlabel('Machine ID', fontsize=12)
+        plt.ylabel('Efficiency Score(%)', fontsize=12)
+        plt.title(f'Machine Efficiency - {self.__factory_name}', fontsize=14, pad=15)
+
+        plt.ylim(0, 100)
+        plt.grid(axis='y', linestyle=':', alpha=0.6, zorder=1)
+
+        file_name = "efficiency_chart.png"
+        plt.tight_layout()
+        plt.savefig(file_name, dpi=300)
+        plt.close()
+
+    def generate_report(self):
+        with open("factory_report.txt", "w", encoding="utf-8") as file:
+
+            file.write("=" * 60 + "\n")
+            file.write(f"  FACTORY REPORT - {self.__factory_name}\n")
+            file.write("=" * 60 + "\n")
+
+            if len(self.skiped_list) > 0:
+                file.write("\n")
+                file.write('--- LOAD WARNINGS ---\n')
+                for skipped in self.skiped_list: # מקטלג לפי סוג שגיאה ומדפיס הודעה בהתאם 
+                    if skipped[1] == 'invalid':
+                        file.write(f'Warning: invalid values on line {skipped[0]} - skipped.\n')
+                    elif skipped[1] == 'fields':
+                        file.write(f'Warning: line {skipped[0]} has wrong number of fields - skipped.\n')
+                    elif skipped[1] == 'type':
+                        file.write(f"Warning: unknown type '{skipped[2]}' on line {skipped[0]} - skipped.\n")
+                    elif skipped[1] == 'exceeded':
+                        file.write(f'Warning: units_rejected exceeds units_produced on line {skipped[0]} - skipped.\n')
+                    elif skipped[1] == 'zero_hours':
+                        file.write(f'Warning: hours_run is zero on line {skipped[0]} - skipped.\n')
+                    elif skipped[1] == 'negative':
+                        file.write(f'Warning: negative values on line {skipped[0]} - skipped.\n')
+                file.write("=" * 60 + "\n")
+            categories = [
+                ("Cutting Machines", self.get_cutting_list()),
+                ("Assembly Machines", self.get_assembly_list()),
+                ("Quality Checkers", self.get_quality_list())]
+
+            for title, machine_list in categories:
+                if (title == "Cutting Machines" and len(self.get_cutting_list()) > 0) or \
+                (title == "Assembly Machines" and len(self.get_assembly_list()) > 0) or \
+                (title == "Quality Checkers" and len(self.get_quality_list()) > 0):
+                    file.write("\n")
+                    file.write(f"--- {title} ---\n")
+                for m in machine_list:
+                    if m.get_error_count() >= CRITICAL_ERROR_THRESHOLD:
+                        crit_status = "  !! CRITICAL"
+                    else:
+                        crit_status = ""
+
+                    file.write(f"{m.get_machine_id():<8}")
+                    file.write(
+                        f"| Hours: {m.get_hours_run():<5}| Produced: {m.get_units_produced():<5} | Rejected: {m.get_units_rejected():<4} | Errors: {m.get_error_count():<3}| Eff: {m.get_efficiency():.2f}%{crit_status}\n")
+
+
+            file.write('\n' + "=" * 60 + "\n")
+            file.write(" SUMMARY STATISTICS  (numpy)\n")
+
+            eff_list = []
+            for m in self.__all_machines:
+                eff_list.append(round(m.get_efficiency(), 2))
+            efficiencies = np.array(eff_list)
+
+            prod_list = []
+            for m in self.__all_machines:
+                prod_list.append(m.get_units_produced())
+            produced_arr = np.array(prod_list)
+
+            rej_list = []
+            for m in self.__all_machines:
+                rej_list.append(m.get_units_rejected())
+            rejected_arr = np.array(rej_list)
+
+            avg_eff = np.mean(efficiencies)
+            best_idx = np.argmax(efficiencies)
+            worst_idx = np.argmin(efficiencies)
+            total_produced = np.sum(produced_arr)
+            total_rejected = np.sum(rejected_arr)
+
+            if total_produced > 0:
+                overall_rej_percent = (total_rejected / total_produced) * 100
+            else:
+                overall_rej_percent = 0.0
+
+            critical_machines = []
+            for m in self.__all_machines:
+                if m.get_error_count() >= CRITICAL_ERROR_THRESHOLD:
+                    critical_machines.append(m.get_machine_id())
+
+            maintenance_count = 0
+            for m in self.__all_machines:
+                if m.maintenance():
+                    maintenance_count += 1
+
+            file.write("=" * 60 + "\n")
+
+            file.write(f"Average efficiency  : {avg_eff:.2f}%\n")
+
+            file.write(
+                f"Highest efficiency  : {self.__all_machines[best_idx].get_machine_id()} ({efficiencies[best_idx]:.2f}%)\n")
+            file.write(
+                f"Lowest efficiency   : {self.__all_machines[worst_idx].get_machine_id()} ({efficiencies[worst_idx]:.2f}%)\n")
+            file.write(f"Total units produced: {total_produced}\n")
+            file.write(f"Total units rejected: {total_rejected}\n")
+            
+            # שים לב לשינוי כאן: השתמשנו ב-round(..., 2) כדי לחתוך אפסים מיותרים
+            file.write(f"Overall rejection % : {round(overall_rej_percent, 2)}%\n")
+
+            if critical_machines:
+                crit_names = ", ".join(critical_machines)
+            else:
+                crit_names = "None"
+
+            file.write(f"Critical machines   : {len(critical_machines)}  →  {crit_names}\n")
+            file.write(f"Maintenance due     : {maintenance_count} machines")
+
+            file.write('\n')
+            file.write("\n")
+
+            file.write("=" * 60 + "\n")
+            file.write(" RANKING - best to worst efficiency\n")
+            file.write("=" * 60 + "\n")
+
+            sorted_machines = sorted(self.__all_machines, key=lambda x: x.get_efficiency(), reverse=True)
+
+            for index, m in enumerate(sorted_machines, start=1):
+                if m.get_error_count() >= CRITICAL_ERROR_THRESHOLD:
+                    crit_status = "  !!"
+                else:
+                    crit_status = ""
+                file.write(
+                    f"{index}. {m.get_machine_id():<8} [{m.get_machine_type()}]  {m.get_efficiency():.2f}%{crit_status}\n")
+            file.write("=" * 60 + "\n")
+
+        print("Report saved to: factory_report.txt")
+
+
+def main():
+    factory_name = input('Enter factory name: ').strip()
+    found_log = False
+    while not found_log:
+        log_file = input('Enter log file name (e.g., factory_log.txt): ').strip()
+        try:
+            f = Factory(factory_name, log_file)
+            found_log = True
+        except FileNotFoundError:
+            print(f"Error: Cannot find '{log_file}'. Please check the spelling and try again.")
+
+    total_machines = len(f.get_cutting_list()) + len(f.get_assembly_list()) + len(f.get_quality_list())
+
+    if total_machines == 0:
+        print('Warning: no valid machines loaded.')
+
+    print(f'\n{factory_name} loaded successfully.')
+    print(
+        f"Machines loaded: {total_machines} ({len(f.get_cutting_list())} cutting, {len(f.get_assembly_list())} assembly, {len(f.get_quality_list())} quality)")
+    
+    if total_machines > 0:
+        f.print_errors()
+        f.efficiancy_graph()
+        f.generate_report()
+        print(f'Efficiency chart saved to: efficiency_chart.png')
+
+
+if __name__ == "__main__":
+    main()
